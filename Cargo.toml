@@ -1,13 +1,50 @@
-[workspace]
-members = ["crates/demo"]
-resolver = "3"
-
 [package]
 name = "glazer"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["std"]
+std = []
+
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-foundation = "0.3.1"
-objc2 = "0.6.2"
-objc2-app-kit = "0.3.1"
+objc2-foundation = { version = "0.3.1", default-features = false, features = [
+    "std",
+    "alloc",
+    "NSTimer",
+] }
+objc2 = { version = "0.6.2", default-features = false, features = [
+    "std",
+    "alloc",
+] }
+objc2-app-kit = { version = "0.3.1", default-features = false, features = [
+    "std",
+    "alloc",
+    "NSApplication",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSGraphics",
+    "NSBitmapImageRep",
+    "NSImageRep",
+    "NSImage",
+    "NSView",
+    "NSWindow",
+] }
+coreaudio-rs = "0.13.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", default-features = false }
+web-sys = { version = "0.3", default-features = false, features = [
+    "console",
+    "AudioContext",
+    "AudioBuffer",
+    "AudioBufferSourceNode",
+    "AudioDestinationNode",
+    "CanvasRenderingContext2d",
+    "HtmlCanvasElement",
+    "ImageData",
+    "AudioProcessingEvent",
+    "Window",
+    "ScriptProcessorNode",
+    "Document",
+] }
