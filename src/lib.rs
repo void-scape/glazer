@@ -1,435 +1,225 @@
 #![no_std]
 extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
 
-pub struct App<T: 'static> {
-    memory: T,
-}
+mod platform;
 
-impl<T> App<T> {
-    pub fn new(memory: T) -> Self {
-        Self { memory }
-    }
-
-    pub fn run(self, update_and_render: fn(Platform<T>), process_audio: fn(Audio)) {
-        let mut memory = self.memory;
-        let update = move |state: PlatformState| {
-            update_and_render(Platform {
-                memory: &mut memory,
-                frame_buffer: state.frame_buffer,
-                width: state.width,
-                height: state.height,
-                delta: state.delta,
-            })
-        };
-
-        #[cfg(target_arch = "wasm32")]
-        wasm::run(update, process_audio);
-        #[cfg(target_os = "macos")]
-        appkit::run(update, process_audio);
-    }
-}
-
-pub struct Platform<'a, T> {
-    pub memory: &'a mut T,
-    pub frame_buffer: &'a mut [u8],
-    pub width: usize,
-    pub height: usize,
-    pub delta: f32,
-}
-
-pub struct Audio<'a> {
-    pub samples: &'a mut [f32],
-    pub sample_rate: f32,
-    pub channels: usize,
-    pub delta: f32,
-}
-
-struct PlatformState<'a> {
-    frame_buffer: &'a mut [u8],
+pub fn run<Memory, Pixels>(
+    mut memory: Memory,
+    frame_buffer: &mut [Pixels],
     width: usize,
     height: usize,
-    delta: f32,
+    handle_input: fn(PlatformInput<Memory>),
+    update_and_render: fn(PlatformUpdate<Memory, Pixels>),
+) where
+    Pixels: 'static,
+    Memory: 'static,
+{
+    assert!(
+        core::mem::size_of::<Pixels>() == 4,
+        "`Pixels` must be 4 bytes"
+    );
+    let pixels_len = frame_buffer.len();
+    let update = move |req: platform::PlatformRequest| {
+        match req {
+            platform::PlatformRequest::Update(state) => {
+                assert!(pixels_len >= state.width * state.height);
+                update_and_render(PlatformUpdate {
+                    memory: &mut memory,
+                    delta: state.delta,
+                    //
+                    frame_buffer: unsafe {
+                        core::slice::from_raw_parts_mut(
+                            state.frame_buffer as *mut _,
+                            state.width * state.height,
+                        )
+                    },
+                    width: state.width,
+                    height: state.height,
+                    //
+                    samples: state.samples,
+                    sample_rate: state.sample_rate,
+                    channels: state.channels,
+                })
+            }
+            platform::PlatformRequest::Input(input) => handle_input(PlatformInput {
+                memory: &mut memory,
+                input,
+            }),
+        }
+    };
+
+    // #[cfg(target_arch = "wasm32")]
+    // platform::wasm::run(update, process_audio);
+    #[cfg(target_os = "macos")]
+    platform::appkit::run(update, frame_buffer.as_mut_ptr() as *mut u8, width, height);
 }
 
-#[cfg(target_arch = "wasm32")]
-mod wasm {
-    use alloc::boxed::Box;
-    use alloc::vec::Vec;
-
-    use wasm_bindgen::prelude::*;
-    use web_sys::{
-        AudioContext, AudioProcessingEvent, CanvasRenderingContext2d, HtmlCanvasElement, ImageData,
+#[macro_export]
+macro_rules! log {
+    () => {
+        $crate::log("\n")
     };
+    ($($arg:tt)*) => {{
+        $crate::log(&alloc::format!($($arg)*));
+        $crate::log("\n")
+    }};
+}
 
-    use crate::{Audio, PlatformState};
+#[doc = "hidden"]
+pub fn log(str: &str) {
+    #[cfg(target_os = "macos")]
+    platform::appkit::log(str);
+}
 
-    #[wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_namespace = console)]
-        fn log(s: &str);
-    }
+#[derive(Debug)]
+pub struct PlatformUpdate<'a, T, Pixels> {
+    // logic
+    pub memory: &'a mut T,
+    pub delta: f32,
 
-    fn init_canvas() -> HtmlCanvasElement {
-        let window = web_sys::window().unwrap();
-        let document = window.document().unwrap();
+    // graphics
+    pub frame_buffer: &'a mut [Pixels],
+    pub width: usize,
+    pub height: usize,
 
-        let canvas = document
-            .create_element("canvas")
-            .unwrap()
-            .dyn_into::<HtmlCanvasElement>()
-            .unwrap();
-        canvas.set_width(600);
-        canvas.set_height(600);
-        document.body().unwrap().append_child(&canvas).unwrap();
-        canvas
-    }
+    // audio
+    pub samples: &'a mut [i16],
+    pub sample_rate: f32,
+    pub channels: usize,
+}
 
-    fn init_audio(mut audio: impl FnMut(Audio) + 'static) {
-        let audio_context = AudioContext::new().unwrap();
-        let processor = audio_context.create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
-            2048, 0, 1
-        ).unwrap();
+#[derive(Debug)]
+pub struct PlatformInput<'a, T> {
+    pub memory: &'a mut T,
+    pub input: Input,
+}
 
-        let mut buf = [0.0; 2048];
-        let audio_closure = Closure::wrap(Box::new(move |event: AudioProcessingEvent| {
-            let output_buffer = event.output_buffer().unwrap();
-            let sample_rate = output_buffer.sample_rate();
-            audio(Audio {
-                samples: &mut buf,
-                channels: 1,
-                sample_rate,
-                delta: 1.0 / 60.0,
-            });
-            output_buffer.copy_to_channel(&buf, 0).unwrap();
-        }) as Box<dyn FnMut(AudioProcessingEvent)>);
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Input {
+    Key {
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        pressed: bool,
+        repeat: bool,
+    },
+    MouseMoved {
+        dx: f32,
+        dy: f32,
+    },
+}
 
-        processor.set_onaudioprocess(Some(audio_closure.as_ref().unchecked_ref()));
-        processor
-            .connect_with_audio_node(&audio_context.destination())
-            .unwrap();
-        audio_closure.forget();
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyCode {
+    KeyA,
+    KeyB,
+    KeyC,
+    KeyD,
+    KeyE,
+    KeyF,
+    KeyG,
+    KeyH,
+    KeyI,
+    KeyJ,
+    KeyK,
+    KeyL,
+    KeyM,
+    KeyN,
+    KeyO,
+    KeyP,
+    KeyQ,
+    KeyR,
+    KeyS,
+    KeyT,
+    KeyU,
+    KeyV,
+    KeyW,
+    KeyX,
+    KeyY,
+    KeyZ,
 
-    fn game_loop(
-        mut update: impl FnMut(PlatformState) + 'static,
-        context: CanvasRenderingContext2d,
-        mut framebuffer: Vec<u8>,
-    ) {
-        let closure = Closure::once_into_js(move || {
-            update(PlatformState {
-                frame_buffer: framebuffer.as_mut_slice(),
-                width: 600,
-                height: 600,
-                delta: 1.0 / 60.0,
-            });
-            let image_data = ImageData::new_with_u8_clamped_array_and_sh(
-                wasm_bindgen::Clamped(framebuffer.as_slice()),
-                600,
-                600,
-            )
-            .unwrap();
-            context.put_image_data(&image_data, 0.0, 0.0).unwrap();
-            game_loop(update, context, framebuffer);
-        });
-        web_sys::window()
-            .unwrap()
-            .request_animation_frame(closure.as_ref().unchecked_ref())
-            .unwrap();
-    }
+    Num0,
+    Num1,
+    Num2,
+    Num3,
+    Num4,
+    Num5,
+    Num6,
+    Num7,
+    Num8,
+    Num9,
 
-    pub fn run(update: impl FnMut(PlatformState) + 'static, audio: impl FnMut(Audio) + 'static) {
-        let canvas = init_canvas();
-        let context = canvas
-            .get_context("2d")
-            .unwrap()
-            .unwrap()
-            .dyn_into::<CanvasRenderingContext2d>()
-            .unwrap();
+    Backslash,
+    CloseBracket,
+    Comma,
+    EqualSign,
+    Hyphen,
+    NonUSBackslash,
+    NonUSPound,
+    OpenBracket,
+    Period,
+    Quote,
+    Semicolon,
+    Separator,
+    Slash,
+    Spacebar,
 
-        let mut framebuffer = Vec::with_capacity(600 * 600 * 4);
-        framebuffer.extend((0..600usize * 600 * 4).map(|i| i as u8));
-        init_audio(audio);
-        game_loop(update, context, framebuffer);
+    CapsLock,
+    LeftAlt,
+    LeftControl,
+    LeftShift,
+    LockingCapsLock,
+    LockingNumLock,
+    LockingScrollLock,
+    RightAlt,
+    RightControl,
+    RightShift,
+    ScrollLock,
+
+    LeftArrow,
+    RightArrow,
+    UpArrow,
+    DownArrow,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    DeleteForward,
+    DeleteOrBackspace,
+    Escape,
+    Insert,
+    Return,
+    Tab,
+
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyModifiers(pub u8);
+
+impl KeyModifiers {
+    pub const CLEAR: Self = Self(0);
+    pub const CAPSLOCK: Self = Self(1);
+    pub const SHIFT: Self = Self(1 << 1);
+    pub const CONTROL: Self = Self(1 << 2);
+    pub const OPTION: Self = Self(1 << 3);
+    pub const COMMAND: Self = Self(1 << 4);
+    pub const NUMERIC_PAD: Self = Self(1 << 5);
+    pub const HELP: Self = Self(1 << 6);
+    pub const FUNCTION: Self = Self(1 << 7);
+}
+
+impl core::ops::BitOr for KeyModifiers {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
     }
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(feature = "std")]
-mod appkit {
-    use std::boxed::Box;
-    use std::cell::RefCell;
-    use std::time::Instant;
-    use std::{dbg, format, println};
+impl core::ops::BitAnd for KeyModifiers {
+    type Output = Self;
 
-    use coreaudio::audio_unit::SampleFormat;
-    use coreaudio::audio_unit::render_callback::{self, data};
-    use coreaudio::audio_unit::{AudioUnit, IOType};
-
-    use objc2::rc::Retained;
-    use objc2::runtime::ProtocolObject;
-    use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
-    use objc2_app_kit::{
-        NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-        NSApplicationTerminateReply, NSBackingStoreType, NSBitmapImageRep, NSColorSpaceName,
-        NSImage, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
-    };
-    use objc2_foundation::{
-        MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-        NSString, NSTimer, ns_string,
-    };
-
-    use crate::{Audio, PlatformState};
-
-    #[derive(Debug, Clone)]
-    struct AppDelegateIvars {
-        #[expect(unused)]
-        window: Retained<NSWindow>,
-        _timer: Retained<NSTimer>,
-    }
-
-    define_class!(
-        #[unsafe(super = NSObject)]
-        #[thread_kind = MainThreadOnly]
-        #[ivars = AppDelegateIvars]
-        struct Delegate;
-
-        unsafe impl NSObjectProtocol for Delegate {}
-
-        unsafe impl NSApplicationDelegate for Delegate {
-            #[unsafe(method(applicationDidFinishLaunching:))]
-            fn did_finish_launching(&self, notification: &NSNotification) {
-                dbg!(notification);
-                dbg!(self.ivars());
-                NSApplication::main(MainThreadMarker::from(self));
-            }
-
-            #[unsafe(method(applicationShouldTerminate:))]
-            unsafe fn application_should_terminate(
-                &self,
-                _sender: &NSApplication,
-            ) -> NSApplicationTerminateReply {
-                NSApplicationTerminateReply::TerminateNow
-            }
-
-            #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
-            unsafe fn application_should_terminate_after_last_window_closed(
-                &self,
-                _sender: &NSApplication,
-            ) -> bool {
-                true
-            }
-        }
-
-        unsafe impl NSWindowDelegate for Delegate {
-            #[unsafe(method(windowWillClose:))]
-            fn window_will_close(&self, _notification: &NSNotification) {
-                // Quit the application when the window is closed.
-                unsafe { NSApplication::sharedApplication(self.mtm()).terminate(None) };
-            }
-        }
-    );
-
-    impl Delegate {
-        fn new(
-            mtm: MainThreadMarker,
-            window: Retained<NSWindow>,
-            view: &Retained<GameView>,
-        ) -> Retained<Self> {
-            let _timer = unsafe {
-                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                    0.0,
-                    view,
-                    objc2::sel!(update:),
-                    None,
-                    true,
-                )
-            };
-            let this = Self::alloc(mtm).set_ivars(AppDelegateIvars { window, _timer });
-            unsafe { msg_send![super(this), init] }
-        }
-    }
-
-    struct GameViewIvars {
-        fb: RefCell<Box<[u8; 600 * 600 * 4]>>,
-        update: RefCell<Box<dyn FnMut(PlatformState)>>,
-        last_time: RefCell<Instant>,
-        window: Retained<NSWindow>,
-    }
-
-    define_class!(
-        #[unsafe(super = NSView)]
-        #[thread_kind = MainThreadOnly]
-        #[ivars = GameViewIvars]
-        struct GameView;
-
-        unsafe impl NSObjectProtocol for GameView {}
-
-        impl GameView {
-            #[unsafe(method(drawRect:))]
-            fn draw_rect(&self, rect: NSRect) {
-                let Ok(fb) = self.ivars().fb.try_borrow() else {
-                    return;
-                };
-
-                let image_rep = unsafe {
-                    let planes: [*const u8; 1] = [fb.as_ptr()];
-                    NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
-                        NSBitmapImageRep::alloc(),
-                        planes.as_ptr() as *mut _,
-                        600,
-                        600,
-                        8,
-                        4,
-                        true,
-                        false,
-                        &*NSColorSpaceName::from_str("NSCalibratedRGBColorSpace"),
-                        600 * 4,
-                        32,
-                    )
-                };
-
-                if let Some(image_rep) = image_rep {
-                    unsafe {
-                        let size = NSSize::new(600.0, 600.0);
-                        let image = NSImage::initWithSize(NSImage::alloc(), size);
-                        image.addRepresentation(&image_rep);
-                        image.drawInRect(rect);
-                    }
-                }
-            }
-
-            #[unsafe(method(update:))]
-            fn update(&self, _timer: &NSTimer) {
-                let ivars = self.ivars();
-
-                let now = Instant::now();
-                let delta = {
-                    let mut last_time = ivars.last_time.borrow_mut();
-                    let delta = now.duration_since(*last_time).as_secs_f32();
-                    *last_time = now;
-                    delta
-                };
-
-                let fps = if delta > 0.0 { 1.0 / delta } else { 0.0 };
-                let title = format!("glazer app - {:.2}", fps);
-                ivars.window.setTitle(&*NSString::from_str(&title));
-
-                if let Ok(mut fb) = ivars.fb.try_borrow_mut() {
-                    let mut update = ivars.update.borrow_mut();
-                    update(
-                        PlatformState {
-                            frame_buffer:
-                            fb.as_mut_slice(),
-                            width: 600,
-                            height: 600,
-                            delta,
-                        },
-                    );
-                    unsafe { self.setNeedsDisplay(true) };
-                }
-            }
-        }
-    );
-
-    impl GameView {
-        fn new(
-            mtm: MainThreadMarker,
-            window: Retained<NSWindow>,
-            update: impl FnMut(PlatformState) + 'static,
-        ) -> Retained<Self> {
-            let ivars = GameViewIvars {
-                fb: RefCell::new(Box::new([255; 600 * 600 * 4])),
-                update: RefCell::new(Box::new(update)),
-                last_time: RefCell::new(Instant::now()),
-                window,
-            };
-            let this = Self::alloc(mtm).set_ivars(ivars);
-            unsafe { msg_send![super(this), init] }
-        }
-    }
-
-    fn init_app(update: impl FnMut(PlatformState) + 'static) -> Retained<NSApplication> {
-        let mtm = MainThreadMarker::new().unwrap();
-        let app = NSApplication::sharedApplication(mtm);
-
-        let window = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(600.0, 600.0)),
-                NSWindowStyleMask::Titled
-                    | NSWindowStyleMask::Closable
-                    | NSWindowStyleMask::Miniaturizable
-                    | NSWindowStyleMask::Resizable,
-                NSBackingStoreType::Buffered,
-                false,
-            )
-        };
-        unsafe { window.setReleasedWhenClosed(false) };
-
-        window.setTitle(ns_string!("glazer app"));
-        window.center();
-        window.makeKeyAndOrderFront(None);
-
-        let custom_view = GameView::new(mtm, window.clone(), update);
-        let view = window.contentView().unwrap();
-        let delegate = Delegate::new(mtm, window, &custom_view);
-        unsafe { view.addSubview(&*custom_view.into_super()) };
-        app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-        // Activate the application.
-        // Required when launching unbundled (as is done with Cargo).
-        #[expect(deprecated)]
-        app.activateIgnoringOtherApps(true);
-        app
-    }
-
-    fn init_audio(mut audio: impl FnMut(Audio) + 'static) -> AudioUnit {
-        let mut audio_unit = AudioUnit::new(IOType::DefaultOutput).unwrap();
-        let stream_format = audio_unit.output_stream_format().unwrap();
-        println!("{:#?}", &stream_format);
-        assert!(SampleFormat::F32 == stream_format.sample_format);
-
-        let sample_rate = stream_format.sample_rate as f32;
-        let channels = stream_format.channels as usize;
-        let mut buf = alloc::vec::Vec::new();
-        type Args = render_callback::Args<data::NonInterleaved<f32>>;
-        audio_unit
-            .set_render_callback(move |args| {
-                let Args {
-                    mut data,
-                    num_frames,
-                    ..
-                } = args;
-                buf.reserve_exact(num_frames * channels);
-                if buf.len() < num_frames * channels {
-                    buf.extend((0..num_frames * channels - buf.len()).map(|_| 0.0));
-                }
-                audio(Audio {
-                    samples: buf.as_mut_slice(),
-                    channels,
-                    sample_rate,
-                    delta: 1.0 / 60.0,
-                });
-                let mut j = 0;
-                for i in 0..num_frames {
-                    for channel in data.channels_mut() {
-                        channel[i] = buf[j];
-                        j += 1;
-                    }
-                }
-                Ok(())
-            })
-            .unwrap();
-        audio_unit.start().unwrap();
-        audio_unit
-    }
-
-    pub fn run(update: impl FnMut(PlatformState) + 'static, audio: impl FnMut(Audio) + 'static) {
-        let app = init_app(update);
-        let _audio = init_audio(audio);
-        unsafe { app.finishLaunching() };
-        app.run();
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
     }
 }

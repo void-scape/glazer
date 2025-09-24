@@ -20,6 +20,7 @@ objc2 = { version = "0.6.2", default-features = false, features = [
 objc2-app-kit = { version = "0.3.1", default-features = false, features = [
     "std",
     "alloc",
+    "objc2-core-foundation",
     "NSApplication",
     "NSResponder",
     "NSRunningApplication",
@@ -29,8 +30,18 @@ objc2-app-kit = { version = "0.3.1", default-features = false, features = [
     "NSImage",
     "NSView",
     "NSWindow",
+    "NSEvent",
 ] }
-coreaudio-rs = "0.13.0"
+objc2-audio-toolbox = { version = "0.3.1", default-features = false, features = [
+    "AUComponent",
+    "AudioComponent",
+    "AudioOutputUnit",
+    "AudioUnitProperties",
+    "objc2-core-audio-types",
+] }
+objc2-core-audio-types = { version = "0.3.1", default-features = false, features = [
+    "CoreAudioBaseTypes",
+] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2", default-features = false }

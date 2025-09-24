@@ -9,6 +9,7 @@ std = ["glazer/std"]
 
 [dependencies]
 glazer = { path = "../../glazer", default-features = false }
+rast = { path = "rast" }
 libm = "0.2.15"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

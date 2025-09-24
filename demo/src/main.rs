@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(not(feature = "std"), no_main)]
+
 #[panic_handler]
 #[cfg(not(feature = "std"))]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -13,9 +14,14 @@ mod alloc_impl {
     static ALLOC: WeeAlloc = WeeAlloc::INIT;
 }
 
-use demo::{Memory, process_audio, update_and_render};
-
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen(start))]
 fn main() {
-    glazer::App::new(Memory::default()).run(update_and_render, process_audio);
+    glazer::run(
+        demo::memory(),
+        demo::frame_buffer(),
+        demo::MAX_WIDTH,
+        demo::MAX_HEIGHT,
+        demo::handle_input,
+        demo::update_and_render,
+    );
 }
