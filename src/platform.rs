@@ -400,7 +400,7 @@ pub mod appkit {
                 NSWindow::alloc(mtm),
                 NSRect::new(
                     NSPoint::new(0.0, 0.0),
-                    NSSize::new(width as f64 * 2.0, height as f64 * 2.0),
+                    NSSize::new(width as f64, height as f64),
                 ),
                 NSWindowStyleMask::Titled
                     | NSWindowStyleMask::Closable
@@ -492,7 +492,7 @@ pub mod appkit {
             .unwrap();
     }
 
-    const AUDIO_SAMPLES_LEN: usize = 1024 * 2;
+    const AUDIO_SAMPLES_LEN: usize = 1024 * 4;
     static mut AUDIO_SAMPLES: [i16; AUDIO_SAMPLES_LEN] = [0; AUDIO_SAMPLES_LEN];
     // secondary buffer for the game to write to
     static mut GAME_SAMPLES: [i16; AUDIO_SAMPLES_LEN] = [0; AUDIO_SAMPLES_LEN];
@@ -542,10 +542,7 @@ pub mod appkit {
             }
 
             if frames_to_read < frames {
-                crate::log!(
-                    "ERROR: audio underrun {} samples",
-                    frames - frames_to_read - 1
-                );
+                crate::log!("ERROR: audio underrun {} samples", frames - frames_to_read);
                 assert_eq!(CHANNELS, 2);
                 for i in frames_to_read..frames {
                     data[i * CHANNELS] = 0;

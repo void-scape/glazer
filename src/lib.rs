@@ -1,7 +1,10 @@
 #![no_std]
 extern crate alloc;
 
+mod debug;
 mod platform;
+
+pub use debug::*;
 
 pub fn run<Memory, Pixels>(
     mut memory: Memory,
@@ -52,23 +55,6 @@ pub fn run<Memory, Pixels>(
     // platform::wasm::run(update, process_audio);
     #[cfg(target_os = "macos")]
     platform::appkit::run(update, frame_buffer.as_mut_ptr() as *mut u8, width, height);
-}
-
-#[macro_export]
-macro_rules! log {
-    () => {
-        $crate::log("\n")
-    };
-    ($($arg:tt)*) => {{
-        $crate::log(&alloc::format!($($arg)*));
-        $crate::log("\n")
-    }};
-}
-
-#[doc = "hidden"]
-pub fn log(str: &str) {
-    #[cfg(target_os = "macos")]
-    platform::appkit::log(str);
 }
 
 #[derive(Debug)]
