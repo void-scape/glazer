@@ -1,18 +1,19 @@
 #![no_std]
 extern crate alloc;
 
-mod debug;
-mod platform;
-
-pub use debug::*;
+#[cfg(target_os = "macos")]
+mod appkit;
+#[cfg(target_os = "macos")]
+use appkit as platform;
 
 pub fn run<Memory, Pixels>(
-    mut memory: Memory,
+    memory: Memory,
     frame_buffer: &mut [Pixels],
     width: usize,
     height: usize,
     handle_input: fn(PlatformInput<Memory>),
     update_and_render: fn(PlatformUpdate<Memory, Pixels>),
+    shared_lib_path: &str,
 ) where
     Pixels: 'static,
     Memory: 'static,
@@ -21,42 +22,18 @@ pub fn run<Memory, Pixels>(
         core::mem::size_of::<Pixels>() == 4,
         "`Pixels` must be 4 bytes"
     );
-    let pixels_len = frame_buffer.len();
-    let update = move |req: platform::PlatformRequest| {
-        match req {
-            platform::PlatformRequest::Update(state) => {
-                assert!(pixels_len >= state.width * state.height);
-                update_and_render(PlatformUpdate {
-                    memory: &mut memory,
-                    delta: state.delta,
-                    //
-                    frame_buffer: unsafe {
-                        core::slice::from_raw_parts_mut(
-                            state.frame_buffer as *mut _,
-                            state.width * state.height,
-                        )
-                    },
-                    width: state.width,
-                    height: state.height,
-                    //
-                    samples: state.samples,
-                    sample_rate: state.sample_rate,
-                    channels: state.channels,
-                })
-            }
-            platform::PlatformRequest::Input(input) => handle_input(PlatformInput {
-                memory: &mut memory,
-                input,
-            }),
-        }
-    };
-
-    // #[cfg(target_arch = "wasm32")]
-    // platform::wasm::run(update, process_audio);
-    #[cfg(target_os = "macos")]
-    platform::appkit::run(update, frame_buffer.as_mut_ptr() as *mut u8, width, height);
+    platform::run(
+        memory,
+        frame_buffer,
+        width,
+        height,
+        handle_input,
+        update_and_render,
+        shared_lib_path,
+    );
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct PlatformUpdate<'a, T, Pixels> {
     // logic
@@ -208,4 +185,35 @@ impl core::ops::BitAnd for KeyModifiers {
     fn bitand(self, rhs: Self) -> Self::Output {
         Self(self.0 & rhs.0)
     }
+}
+
+// Debug utility
+
+#[macro_export]
+macro_rules! log {
+    () => {
+        $crate::__log("\n")
+    };
+    ($($arg:tt)*) => {{
+        $crate::__log(&alloc::format!($($arg)*));
+        $crate::__log("\n")
+    }};
+}
+
+#[inline]
+#[doc(hidden)]
+pub fn __log(str: &str) {
+    platform::log(str);
+}
+
+pub fn debug_time_secs<R>(f: impl FnMut() -> R) -> (f32, R) {
+    platform::debug_time_secs(f)
+}
+
+pub fn debug_time_millis<R>(f: impl FnMut() -> R) -> (u128, R) {
+    platform::debug_time_millis(f)
+}
+
+pub fn debug_time_nanos<R>(f: impl FnMut() -> R) -> (u128, R) {
+    platform::debug_time_nanos(f)
 }
